@@ -4,7 +4,8 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DB_FILE = path.join(__dirname, 'db.json');
+const isVercel = process.env.VERCEL === '1';
+const DB_FILE = isVercel ? '/tmp/db.json' : path.join(__dirname, 'db.json');
 
 // Initialize database file if it doesn't exist
 if (!fs.existsSync(DB_FILE)) {
