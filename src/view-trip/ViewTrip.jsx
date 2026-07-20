@@ -18,7 +18,8 @@ import {
   TrendingUp,
   Award,
   Clock,
-  Navigation
+  Navigation,
+  Loader2
 } from "lucide-react";
 import L from "leaflet";
 
