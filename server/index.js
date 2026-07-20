@@ -17,14 +17,20 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
 
-// Initialize Gemini API
-const apiKey = process.env.GEMINI_API_KEY;
+// Initialize LLM APIs
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 let genAI = null;
-if (apiKey) {
-  genAI = new GoogleGenerativeAI(apiKey);
+if (GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
   console.log("Gemini API key loaded successfully.");
-} else {
-  console.warn("WARNING: GEMINI_API_KEY is not defined in the environment. Running in sandbox mode with fallback mock data.");
+}
+if (OPENAI_API_KEY) {
+  console.log("OpenAI API key loaded successfully.");
+}
+if (!GEMINI_API_KEY && !OPENAI_API_KEY) {
+  console.warn("WARNING: Neither GEMINI_API_KEY nor OPENAI_API_KEY is configured. Running in sandbox mode with fallback mock data.");
 }
 
 // Fallback Mock Data for Demo
@@ -447,12 +453,6 @@ const MOCK_TRIPS = {
 
 // LLM Gen Helper
 async function generateTripWithAI(location, noOfDays, budget, traveler) {
-  if (!genAI) {
-    throw new Error("Gemini API key is not configured.");
-  }
-  
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-  
   const prompt = `
 Generate a highly detailed travel itinerary for the following parameters:
 - Destination: ${location}
@@ -508,15 +508,43 @@ The JSON object must strictly match the following JSON schema:
 Double check that the latitude and longitude fields are numbers (not strings) so they can be plotted on a map. Generate at least 3 distinct activities per day. Make the hotel list contain at least 2 recommended options matching the budget category. Make sure the output is a single clean JSON object, parseable by JSON.parse.
 `;
 
-  const result = await model.generateContent({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: {
-      responseMimeType: "application/json",
+  if (OPENAI_API_KEY) {
+    console.log("Using OpenAI (gpt-4o-mini) for itinerary generation...");
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'user', content: prompt }
+        ],
+        response_format: { type: "json_object" }
+      })
+    });
+    
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`OpenAI API error: ${errText}`);
     }
-  });
-
-  const responseText = result.response.text();
-  return JSON.parse(responseText);
+    
+    const data = await response.json();
+    return JSON.parse(data.choices[0].message.content);
+  } else if (genAI) {
+    console.log("Using Gemini (gemini-1.5-flash) for itinerary generation...");
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+      }
+    });
+    return JSON.parse(result.response.text());
+  } else {
+    throw new Error("No LLM API keys configured.");
+  }
 }
 
 // Generate Trip Endpoint
@@ -533,7 +561,7 @@ app.post('/api/generate-trip', async (req, res) => {
     let tripData = null;
     
     // Check if we can use LLM
-    if (genAI) {
+    if (genAI || OPENAI_API_KEY) {
       console.log(`Generating AI trip for ${location.label || location}...`);
       try {
         tripData = await generateTripWithAI(location.label || location, daysNum, budget, traveler);
@@ -670,13 +698,6 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    if (!genAI) {
-      return res.status(200).json({
-        text: `[Sandbox Companion] That's a great question about your trip to ${trip.destination}! As we are in offline demo mode, I'll happily simulate a travel expert: Make sure you visit the morning sights early, pack according to the checklist, and stay under the budget limit!`
-      });
-    }
-
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const systemInstruction = `
 You are an expert AI Travel Assistant helping a traveler on their trip.
 Here are the trip details:
@@ -691,15 +712,45 @@ Here are the trip details:
 Help the user with any questions they have. Suggest alternative spots, provide historical details, recommend restaurants near their activities, give packing advice, or help adjust their schedule. Keep your replies concise (under 4 sentences), friendly, and highly actionable.
 `;
 
-    const chat = model.startChat({
-      history: [
-        { role: 'user', parts: [{ text: `Here is my trip context:\n${systemInstruction}` }] },
-        { role: 'model', parts: [{ text: "Got it! I am ready to assist you. Ask me anything about your trip!" }] }
-      ]
-    });
-    
-    const response = await chat.sendMessage(message);
-    res.status(200).json({ text: response.response.text() });
+    if (OPENAI_API_KEY) {
+      console.log("Using OpenAI (gpt-4o-mini) for chatbot assistant...");
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: message }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("OpenAI API error during chat.");
+      }
+
+      const data = await response.json();
+      res.status(200).json({ text: data.choices[0].message.content });
+    } else if (genAI) {
+      console.log("Using Gemini (gemini-1.5-flash) for chatbot assistant...");
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const chat = model.startChat({
+        history: [
+          { role: 'user', parts: [{ text: `Here is my trip context:\n${systemInstruction}` }] },
+          { role: 'model', parts: [{ text: "Got it! I am ready to assist you. Ask me anything about your trip!" }] }
+        ]
+      });
+      const response = await chat.sendMessage(message);
+      res.status(200).json({ text: response.response.text() });
+    } else {
+      res.status(200).json({
+        text: `[Sandbox Companion] That's a great question about your trip to ${trip.destination}! As we are in offline demo mode, I'll happily simulate a travel expert: Make sure you visit the morning sights early, pack according to the checklist, and stay under the budget limit!`
+      });
+    }
   } catch (error) {
     console.error("Chat assistant error:", error);
     res.status(500).json({ error: "Failed to query chat assistant.", details: error.message });
